@@ -1,0 +1,170 @@
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Practical Machine Learning / Prediction Assignment
+## Synopsis
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. 
+
+In this project, the goal is to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants, and to predict the manner in which they did the exercise (they were asked to perform barbell lifts correctly and incorrectly in 5 different ways).
+
+## Loading and reading data
+More information about the data is available from the website here: http://groupware.les.inf.puc-rio.br/har.
+
+On the first step we do setwd() and then load the data. After that we load the required R libraries.
+
+```{r data loading, results='hide'}
+
+if(!file.exists("project")){
+  dir.create("project")
+}
+
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",destfile="./project/pml-training.csv",method="auto")
+download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv",destfile="./project/pml-testing.csv",method="auto")
+list.files("./project")
+
+training <- read.csv("./project/pml-training.csv")
+testing <- read.csv("./project/pml-testing.csv")
+
+dim(training); dim(testing)
+
+library(caret)
+library(corrplot)
+library(rattle)
+```
+
+The *training* dataset has `r dim(training)[1]` rows and `r dim(training)[2]` columns, while the *testing* dataset has `r dim(testing)[1]` rows and `r dim(testing)[2]` columns.
+
+## Cleaning Data
+The number of variables is too big. We should explore them and clear our datasets. This we do in three steps:
+
+### Removing Near Zero Variables
+```{r training1, results='hide'}
+near0var <- nearZeroVar(training, saveMetrics = TRUE)
+head(near0var, 15)
+training1 <- training[, !near0var$nzv]
+testing1 <- testing[, !near0var$nzv]
+dim(training1); dim(testing1)
+```
+After removing Near Zero Variables both datasets contain each `r dim(training1)[2]` columns/variables.
+
+### Removing NA
+```{r training2, results='hide'}
+training2 <- training1[, (colSums(is.na(training1)) == 0)]
+testing2 <- testing1[, (colSums(is.na(training1)) == 0)]
+dim(training2); dim(testing2)
+```
+After removing variables containing NAs both datasets have each `r dim(training2)[2]` columns/variables.
+
+### Removing other useless variables
+```{r training3, results='hide'}
+training3 <- training2[, !(grepl("^X|user_name|timestamp|num_window", names(training2)))]
+testing3 <- testing2[, !(grepl("^X|user_name|timestamp|num_window", names(training2)))]
+dim(training3); dim(testing3)
+```
+After removing some other useless variables both datasets contain each `r dim(training3)[2]` columns/variables.
+
+### Removing highly correlated variables.
+```{r corr}
+corrM <- cor(training3[, -length(names(training3))])
+corrplot(corrM, method = "circle", tl.cex = 0.7)
+```
+```{r corr plot, results='hide'}
+rmcorr <- findCorrelation(corrM, cutoff = .90, verbose = TRUE)
+training4 <- training3[,-rmcorr]
+testing4 <- testing3[,-rmcorr]
+dim(training4); dim(testing4)
+```
+
+After removing highly correlated variables both datasets contain each `r dim(training4)[2]` columns/variables.
+
+## Partitioning training set for Cross Validation
+
+For validation purposes we will split the cleaned training dataset in two sets, one for training and one for cross validation. The smaller *final training dataset* will contain 70% of the cleaned training dataset and the *cross validation dataset* will contain 30% of the dataset. The reason for such procedure is that after we obtain our model, we will use the cross validation data set to test the accuracy of our model.
+
+```{r validation set}
+set.seed(23232) # reproducibility
+partition <- createDataPartition(y = training4$classe, p = 0.7, list = FALSE)
+training.final = training4[partition, ]
+validation = training4[-partition, ]
+dim(training.final); dim(validation)
+
+```
+
+## Choosing a model
+
+### Predicting with DECISION TREE
+
+First we try DESISION TREE. 
+
+```{r TREE, results='hide', cache=TRUE}
+set.seed(23232)
+modFitTREE <- train(classe ~ .,method="rpart",data=training.final)
+fancyRpartPlot(modFitTREE$finalModel)
+predTREE <- predict(modFitTREE,newdata=validation)
+cfTREE <- confusionMatrix(predTREE,validation$classe)
+```
+
+```{r tab1}
+cfTREE$table
+cfTREE$overall[1]
+```
+The results with DECISION TREE are very poor. We can exclude this model already on this stage.
+
+### Predicting with GBM
+```{r gbm, results='hide', cache=TRUE }
+set.seed(23232)
+modelFitGBM <- train(classe ~.,data=validation, method="gbm")
+predGBM <- predict(modelFitGBM,newdata=validation)
+cfGBM <- confusionMatrix(predGBM,validation$classe)
+```
+
+```{r tab2}
+cfGBM$table
+cfGBM$overall[1]
+```
+
+We have got very good results. But let's try one more model.
+
+### Predicting with RANDOM FOREST
+
+And now we try Random Forest algorithm. It selects automatically  important variables and is robust to correlated covariates and outliers in general.
+
+```{r rf, results='hide', cache=TRUE }
+set.seed(23232)
+modelFitRF <- train(classe ~.,data=validation, method="rf")
+
+predRF <- predict(modelFitRF,newdata=validation)
+
+cfRF <- confusionMatrix(predRF,validation$classe)
+```
+
+```{r tab3}
+cfRF$table
+cfRF$overall[1]
+```
+
+The results are perfect. We choose this model for final predictions.
+
+### Out of Sample Error
+
+```{r ose, cache=TRUE}
+control <- trainControl(method="repeatedcv", number=10, repeats=3)
+set.seed(23232)
+modelRF <- train(classe ~ ., data=training.final, method="rf", trControl=control)
+M <- confusionMatrix(predict(modelRF, newdata=validation), validation$classe)
+ose <- 1 - M$overall[1] 
+names(ose)<- "Out of Sample Error"
+ose
+```
+
+## Final predictions / RESULTS
+
+The Random Forest model produces the best (perfect) results. So we use it to predict our 20 values in the testing set.
+```{r answer, cache=TRUE}
+predRFtest <- predict(modelFitRF,newdata=testing4)
+predRFtest
+```
+
